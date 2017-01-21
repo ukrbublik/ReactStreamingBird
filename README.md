@@ -1,1 +1,3 @@
+Part of code taken from https://github.com/OwlyCode/StreamingBird
+
 API changed, need to rewrite docs and tests...
