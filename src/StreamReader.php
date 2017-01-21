@@ -147,7 +147,7 @@ class StreamReader extends EventEmitter
         })
         ->then(function($initialTweets) {
             foreach ($initialTweets as $tweet) {
-               $this->emit("tweet", [$tweet]);
+              $this->emit("tweet", [$tweet]);
             }
             return $this->openStream();
         });
@@ -318,7 +318,7 @@ class StreamReader extends EventEmitter
         $reqData = new RequestData($method, $fullUrl, $headers, '1.1');
         $request = new HttpRequest($connector, $reqData);
         $buffer = '';
-        $request->on('response', function ($response) use (&$deferred, &$buffer) {
+        $request->on('response', function ($response) use (&$deferred, &$buffer, $method, $url, $requestParams) {
             if ($response->getCode() != 200) {
               if (in_array($response->getCode(), [420, 410, 429]) 
                 || $response->getCode() >= 500) {
@@ -329,7 +329,7 @@ class StreamReader extends EventEmitter
                   } else {
                       $err = new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $response->getCode()));
                       $this->emit("warning", [$err]);
-                      $this->loop->addTimer(self::RETRY_TIME, function() use (&$deferred) {
+                      $this->loop->addTimer(self::RETRY_TIME, function() use (&$deferred, $method, $url, $requestParams) {
                           $this->performApiRequest($method, $url, $requestParams)
                           ->then(function($data) use (&$deferred) {
                               $deferred->resolve($data);
