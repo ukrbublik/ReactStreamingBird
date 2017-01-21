@@ -44,9 +44,9 @@ class Oauth
      *
      * @return string
      */
-    public function getAuthorizationHeader($url, array $params, array $overrides = [])
+    public function getAuthorizationHeader($method, $url, array $params, array $overrides = [])
     {
-        $headers = $this->prepareHeaders('POST', $url, $params, $overrides);
+        $headers = $this->prepareHeaders($method, $url, $params, $overrides);
 
         $headers = implode(',', array_map(function($name, $value){
             return sprintf('%s="%s"', $name, $value);

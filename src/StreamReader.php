@@ -16,6 +16,7 @@ use React\HttpClient\Response;
 use React\EventLoop\TimerInterface;
 use React\Promise\Deferred;
 use React\Promise\RejectedPromise;
+use React\Promise\FulfilledPromise;
 use Evenement\EventEmitter;
 
 class StreamReader extends EventEmitter
@@ -26,6 +27,7 @@ class StreamReader extends EventEmitter
     const CONNECT_TIMEOUT = 5;
     const RETRY_TIME = 10;
     const STALL_DETECT_TIME = 90;
+    const TWEETS_BEFORE = 25;
     const USER_AGENT = 'TwitterStreamReader/1.0RC +https://github.com/owlycode/twitter-stream-reader';
 
     const METHOD_FILTER   = 'filter';
@@ -44,6 +46,10 @@ class StreamReader extends EventEmitter
         'retweet'  => 'https://stream.twitter.com/1.1/statuses/retweet.json',
         'firehose' => 'https://stream.twitter.com/1.1/statuses/firehose.json',
         'links'    => 'https://stream.twitter.com/1.1/statuses/links.json'
+    ];
+
+    protected $endpointsBefore = [
+        'user'     => 'https://api.twitter.com/1.1/statuses/home_timeline.json',
     ];
 
     /*** @var ConnectorInterface */
@@ -134,11 +140,29 @@ class StreamReader extends EventEmitter
      */
     public function openAsync()
     {
+        return $this->readBeforeStream()
+        ->otherwise(function($err) {
+            //If failed to load initial portion of tweets, continue anyway
+            $this->emit("warning", [$err]);
+        })
+        ->then(function($initialTweets) {
+            foreach ($initialTweets as $tweet) {
+               $this->emit("tweet", [$tweet]);
+            }
+            return $this->openStream();
+        });
+    }
+
+    /**
+     * Connect and read from stream
+     */
+    public function openStream()
+    {
         $url      = $this->endpoints[$this->method];
         $urlParts = parse_url($url);
-        $scheme   = $urlParts['scheme'] == 'https' ? 'ssl://' : 'tcp://';
-        $port     = $urlParts['scheme'] == 'https' ? 443 : 80;
         $isSecure = ($urlParts['scheme'] == 'https');
+        $scheme   = $isSecure ? 'ssl://' : 'tcp://';
+        $port     = $isSecure ? 443 : 80;
 
         $requestParams = [];
 
@@ -162,11 +186,12 @@ class StreamReader extends EventEmitter
         }
 
         $this->stop();
-        $this->connectAsync($isSecure, $urlParts['host'], $port)
+
+        return $this->connectAsync($isSecure, $urlParts['host'], $port)
         ->then(function() use ($url, $requestParams) {
             $this->connectRetryCount = 0;
             return $this->readFromStream
-              ($url, $requestParams, $this->oauth->getAuthorizationHeader($url, $requestParams))
+              ($url, $requestParams, $this->oauth->getAuthorizationHeader('POST', $url, $requestParams))
             ->then(function($res) {
                 $this->readRetryCount++;
                 $err = null;
@@ -179,21 +204,22 @@ class StreamReader extends EventEmitter
                 else if ($res['type'] == 'err')
                     $err = $res['err'];
                 if ($this->readRetryCount >= self::MAX_RETRY_ATTEMPTS) {
-                    $this->readRetryCount = 0;
-                    $this->emit("error", [$err]);
+                    throw $err;
                 } else {
                   $this->emit("warning", [$err]);
                   $time = ($res['type'] == 'http' ? self::RETRY_TIME : 0.5);
                   $this->loop->addTimer($time, function() {
-                      $this->openAsync();
+                      $this->openStream();
                   });
                 }
-            }, function($err) {
-                $this->readRetryCount = 0;
-                $this->emit("error", [$err]);
+            })
+            ->otherwise(function($err) {
+                throw $err;
             });
-        }, function($err) {
+        })
+        ->otherwise(function($err) {
             $this->connectRetryCount = 0;
+            $this->readRetryCount = 0;
             $this->emit("error", [$err]);
         });
     }
@@ -206,31 +232,23 @@ class StreamReader extends EventEmitter
      */
     protected function connectAsync($isSecure, $host, $port)
     {
-        $tcpConnector = new TcpConnector($this->loop);
-        $dnsResolverFactory = new \React\Dns\Resolver\Factory();
-        $this->dns = $dnsResolverFactory->createCached('8.8.8.8', $this->loop);
-        $dnsConnector = new DnsConnector($tcpConnector, $this->dns);
-        $connector = new TimeoutConnector($dnsConnector, self::CONNECT_TIMEOUT, $this->loop);
-        $secureConnector = new TimeoutConnector(
-          new SecureConnector($dnsConnector, $this->loop), self::CONNECT_TIMEOUT, $this->loop);
-        $this->connector = ($isSecure ? $secureConnector : $connector);
-
         $deferred = new Deferred();
-        $this->connector->create($host, $port)->then(function($stream) use ($deferred) {
+        $this->connector = $this->getConnector($isSecure);
+        $this->connector->create($host, $port)->then(function($stream) use (&$deferred) {
             $this->stream = $stream;
             $deferred->resolve();
-        }, function($err) use ($deferred, $isSecure, $host, $port) {
+        }, function($err) use (&$deferred, $isSecure, $host, $port) {
             if ($err instanceof \RuntimeException) {
                 $this->connectRetryCount++;
-                if ($this->connectRetryCount >= 1 /*self::MAX_CONNECT_ATTEMPTS*/) {
+                if ($this->connectRetryCount >= self::MAX_CONNECT_ATTEMPTS) {
                     $deferred->reject($err);
                 } else {
                     $this->loop->addTimer(self::CONNECT_RETRY_TIME, 
-                      function() use ($deferred, $isSecure, $host, $port) {
+                      function() use (&$deferred, $isSecure, $host, $port) {
                         $promise = $this->connectAsync($isSecure, $host, $port);
-                        $promise->then(function() use ($deferred) {
+                        $promise->then(function() use (&$deferred) {
                             $deferred->resolve();
-                        }, function($err) use ($deferred) {
+                        }, function($err) use (&$deferred) {
                             $deferred->reject($err);
                         });
                     });
@@ -243,6 +261,106 @@ class StreamReader extends EventEmitter
         return $deferred->promise();
     }
 
+    protected function getConnector($isSecure) {
+        $tcpConnector = new TcpConnector($this->loop);
+        $dnsResolverFactory = new \React\Dns\Resolver\Factory();
+        $dns = $dnsResolverFactory->createCached('8.8.8.8', $this->loop);
+        $dnsConnector = new DnsConnector($tcpConnector, $dns);
+        $connector = new TimeoutConnector($dnsConnector, self::CONNECT_TIMEOUT, $this->loop);
+        $secureConnector = new TimeoutConnector(
+          new SecureConnector($dnsConnector, $this->loop), self::CONNECT_TIMEOUT, $this->loop);
+        return ($isSecure ? $secureConnector : $connector);
+    }
+
+    protected function readBeforeStream() {
+        if (array_key_exists($this->method, $this->endpointsBefore)) {
+            $url = $this->endpointsBefore[$this->method];
+            $requestParams = [];
+            if ($this->lang) {
+                $requestParams['language'] = $this->lang;
+            }
+            if ($this->method === self::METHOD_USER) {
+                $requestParams['count'] = self::TWEETS_BEFORE;
+            }
+            return $this->performApiRequest('GET', $url, $requestParams)
+            ->then(function($data) {
+                $tweets = $this->processInitialData($data);
+                return $tweets;
+            });
+        } else {
+            return new FulfilledPromise([]);
+        }
+    }
+
+    /**
+     * @param string $method GET/POST
+     * @param string $url
+     * @param array  $requestParams
+     * @return Promise
+     */
+    protected function performApiRequest($method, $url, array $requestParams) {
+        $deferred = new Deferred();
+        $fullUrl = $method != 'GET' ? $url : $url . (count($requestParams) ? '?'.http_build_query($requestParams, null, '&', PHP_QUERY_RFC3986) : "");
+        $postData = $method != 'POST' ? null : http_build_query($requestParams, null, '&', PHP_QUERY_RFC3986);
+        $urlParts = parse_url($url);
+        $isSecure = ($urlParts['scheme'] == 'https');
+        $credentials = $this->oauth->getAuthorizationHeader($method, $url, $requestParams);
+        $headers = [
+            'Accept' => '*/*',
+            'Authorization' => $credentials,
+            'User-Agent' => self::USER_AGENT,
+        ];
+        if ($method == 'POST') {
+            $headers['Content-Type'] = 'application/x-www-form-urlencoded';
+            $headers['Content-Length'] = strlen($postData);
+        }
+        $connector = $this->getConnector($isSecure);
+        $reqData = new RequestData($method, $fullUrl, $headers, '1.1');
+        $request = new HttpRequest($connector, $reqData);
+        $buffer = '';
+        $request->on('response', function ($response) use (&$deferred, &$buffer) {
+            if ($response->getCode() != 200) {
+              if (in_array($response->getCode(), [420, 410, 429]) 
+                || $response->getCode() >= 500) {
+                  //Got HTTP retryable status
+                  $this->readRetryCount++;
+                  if ($this->readRetryCount >= self::MAX_RETRY_ATTEMPTS) {
+                      $deferred->reject($err);
+                  } else {
+                      $err = new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $response->getCode()));
+                      $this->emit("warning", [$err]);
+                      $this->loop->addTimer(self::RETRY_TIME, function() use (&$deferred) {
+                          $this->performApiRequest($method, $url, $requestParams)
+                          ->then(function($data) use (&$deferred) {
+                              $deferred->resolve($data);
+                          }, function($err) use (&$deferred) {
+                              $deferred->reject($err);
+                          });
+                      });                    
+                  }
+              } else
+                $deferred->reject(new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $response->getCode())));
+            } else {
+                $response->on('data', function ($data, $response) use (&$deferred, &$buffer) {
+                    $buffer .= $data;
+                });
+                $response->on('error', function($err) use (&$deferred) {
+                    $deferred->reject($err);
+                });
+                $response->on('end', function() use (&$deferred, &$buffer) {
+                    $deferred->resolve($buffer);
+                });
+            }
+        });
+        if ($method == 'POST')
+            $request->end($postData);
+        else
+            $request->end();
+        return $deferred->promise()->always(function() {
+            $this->readRetryCount = 0;
+        });
+    }
+
     /**
      * @param string $url
      * @param array  $params
@@ -253,7 +371,6 @@ class StreamReader extends EventEmitter
     {
         $deferred = new Deferred();
 
-        $urlParts = parse_url($url);
         $postData = http_build_query($params, null, '&', PHP_QUERY_RFC3986);
         $headers = [
             'Content-Type' => 'application/x-www-form-urlencoded',
@@ -266,12 +383,12 @@ class StreamReader extends EventEmitter
         $reqData = new RequestData('POST', $url, $headers, '1.1');
         $this->request = new HttpRequest($this->connector, $reqData, $this->stream);
 
-        $this->addStallDetectTimer(function () use ($deferred) {
+        $this->addStallDetectTimer(function () use (&$deferred) {
             //Stalled
             $this->stop();
             $deferred->resolve(['type' => 'stalled']);
         });
-        $this->request->on('response', function ($response) use ($deferred) {
+        $this->request->on('response', function ($response) use (&$deferred) {
             $this->readRetryCount = 0;
             $this->response = $response;
             if ($response->getCode() != 200) {
@@ -284,26 +401,26 @@ class StreamReader extends EventEmitter
                     $deferred->reject(new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $response->getCode())));
                 }
             } else {
-                $response->on('data', function ($data, $response) use ($deferred) {
+                $response->on('data', function ($data, $response) use (&$deferred) {
                     $this->buffer .= $data;
                     $this->processBuffer();
-                    $this->addStallDetectTimer(function () use ($deferred) {
+                    $this->addStallDetectTimer(function () use (&$deferred) {
                         //Stalled
                         $this->stop();
                         $deferred->resolve(['type' => 'stalled']);
                     });
                 });
-                $response->on('error', function($err) use ($deferred) {
+                $response->on('error', function($err) use (&$deferred) {
                     $deferred->resolve(['type' => 'err', 'err' => $err]);
                 });
-                $response->on('end', function() use ($deferred) {
+                $response->on('end', function() use (&$deferred) {
                     //Disconnected
                     $deferred->resolve(['type' => 'disconnected']);
                 });
             }
         });
 
-        $this->request->on('error', function($err) use ($deferred) {
+        $this->request->on('error', function($err) use (&$deferred) {
             $deferred->resolve(['type' => 'err', 'err' => $err]);
         });
 
@@ -320,13 +437,19 @@ class StreamReader extends EventEmitter
         if ($this->stallTimer !== null)
             $this->stallTimer->cancel();
         $this->stallTimer = $this->loop->addTimer(self::STALL_DETECT_TIME, 
-          function() {
+          function() use (&$onStalled) {
             $idle = (time() - $this->lastStreamActivity);
             if ($idle >= self::STALL_DETECT_TIME) {
                 //Stall detected
                 call_user_func_array($onStalled, []);
             }
         });
+    }
+
+    protected function processInitialData($data)
+    {
+        $res = json_decode($data, true);
+        return $res;
     }
 
     protected function processBuffer() 
