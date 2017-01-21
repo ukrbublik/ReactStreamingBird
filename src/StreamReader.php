@@ -127,9 +127,6 @@ class StreamReader extends EventEmitter
             $this->response->close();
             $this->response = null;
         }
-        $this->removeAllListeners('tweet');
-        $this->removeAllListeners('error');
-        $this->removeAllListeners('warning');
     }
 
     /**
