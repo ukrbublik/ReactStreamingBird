@@ -38,7 +38,7 @@ class StreamReader extends EventEmitter
 
     protected $endpoints = [
         'site'     => 'https://sitestream.twitter.com/1.1/site.json',
-        'user'     => 'https://userstream.twitter.com/2/user.json',
+        'user'     => 'https://userstream.twitter.com/1.1/user.json',
         'filter'   => 'https://stream.twitter.com/1.1/statuses/filter.json',
         'sample'   => 'https://stream.twitter.com/1.1/statuses/sample.json',
         'retweet'  => 'https://stream.twitter.com/1.1/statuses/retweet.json',
@@ -127,6 +127,9 @@ class StreamReader extends EventEmitter
             $this->response->close();
             $this->response = null;
         }
+        $this->removeAllListeners('tweet');
+        $this->removeAllListeners('error');
+        $this->removeAllListeners('warning');
     }
 
     /**
@@ -169,17 +172,20 @@ class StreamReader extends EventEmitter
               ($url, $requestParams, $this->oauth->getAuthorizationHeader($url, $requestParams))
             ->then(function($res) {
                 $this->readRetryCount++;
+                $err = null;
+                if ($res['type'] == 'http')
+                    $err = new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $res['code']));
+                else if ($res['type'] == 'stalled')
+                    $err = new \TwitterException("Stalled");
+                else if ($res['type'] == 'disconnected')
+                    $err = new \TwitterException("Disconnected");
+                else if ($res['type'] == 'err')
+                    $err = $res['err'];
                 if ($this->readRetryCount >= self::MAX_RETRY_ATTEMPTS) {
                     $this->readRetryCount = 0;
-                    if ($res['type'] == 'http')
-                        $this->emit("error", [new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $res['code']))]);
-                    else if ($res['type'] == 'stalled')
-                        $this->emit("error", [new \TwitterException("Stalled")]);
-                    else if ($res['type'] == 'disconnected')
-                        $this->emit("error", [new \TwitterException("Disconnected")]);
-                    else if ($res['type'] == 'err')
-                        $this->emit("error", [$res['err']]);
+                    $this->emit("error", [$err]);
                 } else {
+                  $this->emit("warning", [$err]);
                   $time = ($res['type'] == 'http' ? self::RETRY_TIME : 0.5);
                   $this->loop->addTimer($time, function() {
                       $this->openAsync();
