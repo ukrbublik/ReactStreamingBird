@@ -211,6 +211,8 @@ class StreamReader extends EventEmitter
                 } else {
                   $this->emit("warning", [$err]);
                   $time = ($res['type'] == 'http' ? self::RETRY_TIME : 0.5);
+                  if ($res['code'] == 420)
+                    $time = 60;
                   $this->loop->addTimer($time, function() {
                       $this->openStream();
                   });
@@ -333,7 +335,10 @@ class StreamReader extends EventEmitter
                   } else {
                       $err = new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $response->getCode()));
                       $this->emit("warning", [$err]);
-                      $this->loop->addTimer(self::RETRY_TIME, function() use (&$deferred, $method, $url, $requestParams) {
+                      $time = self::RETRY_TIME;
+                      if ($response->getCode() == 420)
+                        $time = 60;
+                      $this->loop->addTimer($time, function() use (&$deferred, $method, $url, $requestParams) {
                           $this->performApiRequest($method, $url, $requestParams)
                           ->then(function($data) use (&$deferred) {
                               $deferred->resolve($data);
