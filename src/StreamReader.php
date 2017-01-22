@@ -222,6 +222,7 @@ class StreamReader extends EventEmitter
                     } else {
                         $time = 0.5;
                     }
+                    echo "Stream Retry #{$this->readRetryCount} in $time s - " . print_r($res, true) . "\n";
                     $this->loop->addTimer($time, function() {
                         $this->openStream();
                     });
@@ -350,6 +351,7 @@ class StreamReader extends EventEmitter
                         $time *= $this->readRetryCount;
                         $max = ($response->getCode() == 420 ? self::MAX_RETRY_TIME_420 : self::MAX_RETRY_TIME);
                         $time = min($time, $max);
+                        echo "API Retry #{$this->readRetryCount} in $time s - " . print_r($res, true) . "\n";
                         $this->loop->addTimer($time, function() use (&$deferred, $method, $url, $requestParams) {
                             $this->performApiRequest($method, $url, $requestParams)
                               ->then(function($data) use (&$deferred) {
@@ -500,9 +502,9 @@ class StreamReader extends EventEmitter
     }
 
     protected function getExceptionForHttpStatus($code) {
-        $errStr = sprintf('Twitter API responsed a "%s" status code.', $code);
+        $errStr = sprintf('Twitter API responsed a %s status code.', $code);
         if ($code == 420) {
-            $errStr = 'Twitter is limiting rate ("420" status code)';
+            $errStr = 'Twitter is limiting rate (420 status code)';
         }
         return new TwitterException($errStr);
     }
