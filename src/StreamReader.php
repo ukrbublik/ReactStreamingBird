@@ -137,7 +137,7 @@ class StreamReader extends EventEmitter
       $this->buffer = '';
       $this->connectRetryCount = 0;
       $this->readRetryCount = 0;
-      
+
       if ($this->request) {
         $this->request->close();
         $this->request = null;
@@ -366,7 +366,7 @@ class StreamReader extends EventEmitter
                         $time *= $this->readRetryCount;
                         $max = ($response->getCode() == 420 ? self::MAX_RETRY_TIME_420 : self::MAX_RETRY_TIME);
                         $time = min($time, $max);
-                        echo "API Retry #{$this->readRetryCount} in $time s - " . print_r($res, true) . "\n";
+                        echo "API Retry #{$this->readRetryCount} in $time s - http " . $response->getCode() . "\n";
                         $this->loop->addTimer($time, function() use (&$deferred, $method, $url, $requestParams) {
                             $this->performApiRequest($method, $url, $requestParams)
                               ->then(function($data) use (&$deferred) {
