@@ -85,6 +85,9 @@ class StreamReader extends EventEmitter
     /*** @var Response */
     private $response;
 
+    /*** @var bool */
+    private $isStopping = false;
+
     /*** @var int */
     protected $readRetryCount = 0;
     /*** @var int */
@@ -127,15 +130,24 @@ class StreamReader extends EventEmitter
      * Stop reading stream
      */
     public function stop() {
-        $this->buffer = '';
-        if ($this->request) {
-            $this->request->close();
-            $this->request = null;
-        }
-        if ($this->response) {
-            $this->response->close();
-            $this->response = null;
-        }
+      if ($this->isStopping)
+        return;
+      $this->isStopping = true;
+
+      $this->buffer = '';
+      $this->connectRetryCount = 0;
+      $this->readRetryCount = 0;
+      
+      if ($this->request) {
+        $this->request->close();
+        $this->request = null;
+      }
+      if ($this->response) {
+        $this->response->close();
+        $this->response = null;
+      }
+
+      $this->isStopping = false;
     }
 
     /**
@@ -197,6 +209,9 @@ class StreamReader extends EventEmitter
             return $this->readFromStream
               ($url, $requestParams, $this->oauth->getAuthorizationHeader('POST', $url, $requestParams))
             ->then(function($res) {
+                if ($this->isStopping) {
+                  return;
+                }
                 if ($this->readRetryCount == 0)
                   $this->emit("online", [0]);
                 $this->readRetryCount++;
