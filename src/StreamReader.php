@@ -231,7 +231,7 @@ class StreamReader extends EventEmitter
                     if ($res['type'] == 'http') {
                         $is420 = (isset($res['code']) && $res['code'] == 420);
                         $time = $is420 ? self::RETRY_TIME_420 : self::RETRY_TIME;
-                        $time *= $this->readRetryCount;
+                        $time = $time * pow(2, $this->readRetryCount - 1);
                         $max = ($is420 ? self::MAX_RETRY_TIME_420 : self::MAX_RETRY_TIME);
                         $time = min($time, $max);
                     } else {
@@ -363,7 +363,7 @@ class StreamReader extends EventEmitter
                         $this->emit("warning", [$err]);
                         $is420 = ($response->getCode() == 420);
                         $time = $is420 ? self::RETRY_TIME_420 : self::RETRY_TIME;
-                        $time *= $this->readRetryCount;
+                        $time = $time * pow(2, $this->readRetryCount - 1);
                         $max = ($response->getCode() == 420 ? self::MAX_RETRY_TIME_420 : self::MAX_RETRY_TIME);
                         $time = min($time, $max);
                         echo "API Retry #{$this->readRetryCount} in $time s - http " . $response->getCode() . "\n";
