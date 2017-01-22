@@ -211,7 +211,7 @@ class StreamReader extends EventEmitter
                 } else {
                   $this->emit("warning", [$err]);
                   $time = ($res['type'] == 'http' ? self::RETRY_TIME : 0.5);
-                  if ($res['code'] == 420)
+                  if (isset($res['code']) && $res['code'] == 420)
                     $time = 60;
                   $this->loop->addTimer($time, function() {
                       $this->openStream();
