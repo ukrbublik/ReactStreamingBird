@@ -146,6 +146,7 @@ class StreamReader extends EventEmitter
             $this->emit("warning", [$err]);
         })
         ->then(function($initialTweets) {
+            $this->emit("clear_tweets", []);
             foreach ($initialTweets as $tweet) {
               $this->emit("tweet", [$tweet]);
             }
@@ -193,6 +194,8 @@ class StreamReader extends EventEmitter
             return $this->readFromStream
               ($url, $requestParams, $this->oauth->getAuthorizationHeader('POST', $url, $requestParams))
             ->then(function($res) {
+                if ($this->readRetryCount == 0)
+                  $this->emit("online", [0]);
                 $this->readRetryCount++;
                 $err = null;
                 if ($res['type'] == 'http')
@@ -221,6 +224,7 @@ class StreamReader extends EventEmitter
             $this->connectRetryCount = 0;
             $this->readRetryCount = 0;
             $this->emit("error", [$err]);
+            $this->emit("online", [0]);
         });
     }
 
@@ -389,7 +393,6 @@ class StreamReader extends EventEmitter
             $deferred->resolve(['type' => 'stalled']);
         });
         $this->request->on('response', function ($response) use (&$deferred) {
-            $this->readRetryCount = 0;
             $this->response = $response;
             if ($response->getCode() != 200) {
                 $this->stop();
@@ -401,6 +404,8 @@ class StreamReader extends EventEmitter
                     $deferred->reject(new TwitterException(sprintf('Twitter API responsed a "%s" status code.', $response->getCode())));
                 }
             } else {
+                $this->emit("online", [1]);
+                $this->readRetryCount = 0;
                 $response->on('data', function ($data, $response) use (&$deferred) {
                     $this->buffer .= $data;
                     $this->processBuffer();
